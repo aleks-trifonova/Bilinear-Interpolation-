@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <time.h>
+#include <omp.h>
 
 
 #define getByte(value, n) (value >> (n*8) & 0xFF)
@@ -150,93 +152,130 @@ void scale(image_t *src, image_t *dst, float scalex, float scaley) {
     dst->h = newHeight;
     dst->w = newWidth;
     int x, y;
+
+#pragma omp parallel
+    int threadnum = omp_get_thread_num();
+
+
     for (x = 0, y = 0; y < newHeight; x++) {
         if (x > newWidth) {
             x = 0;
             y++;
         }
-        float gx = x / (float) (newWidth) * (src->w - 1);
-        float gy = y / (float) (newHeight) * (src->h - 1);
-        int gxi = (int) gx;
-        int gyi = (int) gy;
-        uint32_t result = 0;
-        uint32_t c00 = getpixel(src, gxi, gyi);
-        uint32_t c10 = getpixel(src, gxi + 1, gyi);
-        uint32_t c01 = getpixel(src, gxi, gyi + 1);
-        uint32_t c11 = getpixel(src, gxi + 1, gyi + 1);
-        uint8_t i;
-        for (i = 0; i < 3; i++) {
-            result |= (uint8_t) blerp(getByte(c00, i), getByte(c10, i), getByte(c01, i), getByte(c11, i), gx - gxi,gy - gyi) << (8 * i);
+
+
+    }
+    float gx = x / (float) (newWidth) * (src->w - 1);
+    float gy = y / (float) (newHeight) * (src->h - 1);
+    int gxi = (int) gx;
+    int gyi = (int) gy;
+    uint32_t result = 0;
+    uint32_t c00 = getpixel(src, gxi, gyi);
+    uint32_t c10 = getpixel(src, gxi + 1, gyi);
+    uint32_t c01 = getpixel(src, gxi, gyi + 1);
+    uint32_t c11 = getpixel(src, gxi + 1, gyi + 1);
+    uint8_t i;
+
+#pragma omp parallel
+
+    for (i = 0; i < 3; i++) {
+        result |= (uint8_t) blerp(getByte(c00, i), getByte(c10, i), getByte(c01, i), getByte(c11, i), gx - gxi,
+                                  gy - gyi) << (8 * i);
+
+
+    }
+}
+        int main(int argc, char **argv) {
+            clock_t start, end;
+            double cpu_time_used;
+            start = clock();
+
+            BITMAPINFOHEADER bitmapInfoHeader;
+            BITMAPFILEHEADER bitmapfileheader;
+            unsigned char *bitmapData;
+
+            bitmapData = LoadBitmapFile("../input_image.bmp", &bitmapfileheader, &bitmapInfoHeader);
+            int pixelCount = bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight;
+            printf("Number of Pixels: %d Image Width: %d Image Height: %d Bits per Pixel: %d\n",
+                   (bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight), bitmapInfoHeader.biWidth,
+                   bitmapInfoHeader.biHeight,
+                   bitmapInfoHeader.biBitCount);
+
+            RGB *rgb = (RGB *) bitmapData;
+            ARGB *argb = malloc(sizeof(ARGB) * pixelCount);
+
+            printf("B: %d B: %d\n", rgb[0].blue, bitmapData[0]);
+            printf("G: %d G: %d\n", rgb[0].green, bitmapData[1]);
+            printf("R: %d  R: %d\n", rgb[0].red, bitmapData[2]);
+
+            int i;
+
+#pragma omp parallel
+
+                for (i = 0; i < pixelCount; i++) {
+                    argb[i].alpha = 0;
+                    argb[i].blue = rgb[i].blue;
+                    argb[i].green = rgb[i].green;
+                    argb[i].red = rgb[i].red;
+                }
+
+
+                printf("B: %d B: %d\n", argb[0].blue, bitmapData[0]);
+                printf("G: %d G: %d\n", argb[0].green, bitmapData[1]);
+                printf("R: %d  R: %d\n", argb[0].red, bitmapData[2]);
+
+                printf("Scaling setup\n");
+                uint32_t *image_buffer = (uint32_t *) argb;
+                image_t *image_source = malloc(sizeof(image_t));
+                image_source->pixels = image_buffer;
+                image_source->h = bitmapInfoHeader.biHeight;
+                image_source->w = bitmapInfoHeader.biWidth;
+                image_t *image_dest = malloc(sizeof(image_t));;
+                printf("Starting scaling\n");
+                scale(image_source, image_dest, 1, 1);
+                printf("Done Scaling\n");
+
+                free(argb);
+                argb = (ARGB *) image_dest->pixels;
+                int newImageSize = image_dest->h * image_dest->w;
+                RGB *newRGB = malloc(sizeof(RGB) * newImageSize);
+
+#pragma omp parallel
+
+
+                    for (i = 0; i < newImageSize; i++) {
+                        newRGB[i].blue = argb[i].blue;
+                        newRGB[i].green = argb[i].green;
+                        newRGB[i].red = argb[i].red;
+                    }
+
+
+                printf("Write BMP\n");
+                FILE *outputFile = fopen("../output_image.bmp", "wb");
+                int byte_change = (newImageSize * 3) - bitmapInfoHeader.biSizeImage;
+                bitmapfileheader.bfSize += byte_change;
+                fwrite(&bitmapfileheader, sizeof(BITMAPFILEHEADER), 1, outputFile);
+                bitmapInfoHeader.biHeight = image_dest->h;
+                bitmapInfoHeader.biWidth = image_dest->w;
+                bitmapInfoHeader.biSizeImage = newImageSize * 24;
+                fwrite(&bitmapInfoHeader, sizeof(BITMAPINFOHEADER), 1, outputFile);
+                fseek(outputFile, bitmapfileheader.bfOffBits, SEEK_SET);
+                uint8_t *data = (uint8_t *) newRGB;
+                fwrite(data, sizeof(uint8_t), newImageSize * 3, outputFile);
+                fclose(outputFile);
+
+                bitmapData = LoadBitmapFile("../input_image.bmp", &bitmapfileheader, &bitmapInfoHeader);
+                printf("Number of Pixels: %d Image Width: %d Image Height: %d Bits per Pixel: %d\n",
+                       (bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight), bitmapInfoHeader.biWidth,
+                       bitmapInfoHeader.biHeight, bitmapInfoHeader.biBitCount);
+                end = clock();
+
+                cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+
+                printf("\nTime elapsed: %f", cpu_time_used);
+
+                return 0;
+
         }
-        putpixel(dst, x, y, result);
-    }
-}
-
-int main(int argc, char **argv) {
-    BITMAPINFOHEADER bitmapInfoHeader;
-    BITMAPFILEHEADER bitmapfileheader;
-    unsigned char *bitmapData;
-
-    bitmapData = LoadBitmapFile("../input_image.bmp", &bitmapfileheader, &bitmapInfoHeader);
-    int pixelCount = bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight;
-    printf("Number of Pixels: %d Image Width: %d Image Height: %d Bits per Pixel: %d\n", (bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight), bitmapInfoHeader.biWidth, bitmapInfoHeader.biHeight, bitmapInfoHeader.biBitCount);
-
-    RGB* rgb = (RGB*) bitmapData;
-    ARGB* argb = malloc(sizeof(ARGB) * pixelCount);
-
-    printf("B: %d B: %d\n",rgb[0].blue, bitmapData[0]);
-    printf("G: %d G: %d\n",rgb[0].green, bitmapData[1]);
-    printf("R: %d  R: %d\n",rgb[0].red, bitmapData[2]);
-
-    int i;
-    for(i = 0; i < pixelCount; i++){
-        argb[i].alpha = 0;
-        argb[i].blue = rgb[i].blue;
-        argb[i].green = rgb[i].green;
-        argb[i].red = rgb[i].red;
     }
 
-    printf("B: %d B: %d\n",argb[0].blue, bitmapData[0]);
-    printf("G: %d G: %d\n",argb[0].green, bitmapData[1]);
-    printf("R: %d  R: %d\n",argb[0].red, bitmapData[2]);
-
-    printf("Scaling setup\n");
-    uint32_t* image_buffer = (uint32_t*) argb;
-    image_t* image_source = malloc(sizeof(image_t));
-    image_source->pixels = image_buffer;
-    image_source->h = bitmapInfoHeader.biHeight;
-    image_source->w = bitmapInfoHeader.biWidth;
-    image_t* image_dest = malloc(sizeof(image_t));;
-    printf("Starting scaling\n");
-    scale(image_source, image_dest, 1, 1);
-    printf("Done Scaling\n");
-
-    free(argb);
-    argb = (ARGB*) image_dest->pixels;
-    int newImageSize = image_dest->h * image_dest->w;
-    RGB* newRGB = malloc(sizeof(RGB) * newImageSize);
-    for(i = 0; i < newImageSize; i++){
-        newRGB[i].blue = argb[i].blue;
-        newRGB[i].green = argb[i].green;
-        newRGB[i].red = argb[i].red;
-    }
-
-    printf("Write BMP\n");
-    FILE *outputFile = fopen("../output_image.bmp","wb");
-    int byte_change = (newImageSize * 3) - bitmapInfoHeader.biSizeImage;
-    bitmapfileheader.bfSize += byte_change;
-    fwrite(&bitmapfileheader, sizeof(BITMAPFILEHEADER), 1, outputFile);
-    bitmapInfoHeader.biHeight = image_dest->h;
-    bitmapInfoHeader.biWidth = image_dest->w;
-    bitmapInfoHeader.biSizeImage = newImageSize * 24;
-    fwrite(&bitmapInfoHeader, sizeof(BITMAPINFOHEADER), 1, outputFile);
-    fseek(outputFile, bitmapfileheader.bfOffBits, SEEK_SET);
-    uint8_t* data = (uint8_t*) newRGB;
-    fwrite(data, sizeof(uint8_t), newImageSize * 3, outputFile);
-    fclose(outputFile);
-
-    bitmapData = LoadBitmapFile("../input_image.bmp", &bitmapfileheader, &bitmapInfoHeader);
-    printf("Number of Pixels: %d Image Width: %d Image Height: %d Bits per Pixel: %d\n", (bitmapInfoHeader.biWidth * bitmapInfoHeader.biHeight), bitmapInfoHeader.biWidth, bitmapInfoHeader.biHeight, bitmapInfoHeader.biBitCount);
-
-    return 0;
-}
